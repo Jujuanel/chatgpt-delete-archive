@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
-// @version      2.1.1
+// @version      2.1.2
 // @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
 // @author       jujuanel
 // @match        https://chatgpt.com/*
@@ -662,7 +662,7 @@
   let toggleBtn = null;
 
   function ensureToggleButton() {
-    if (toggleBtn && toggleBtn.isConnected) return;
+    if (toggleBtn && toggleBtn.isConnected && !toggleBtn.nextElementSibling) return;
     // 复用 “Recents” 标题右侧原生图标按钮的样式
     const header = getRecentsHeader();
     const slot = header && header.lastElementChild;
@@ -683,26 +683,9 @@
         setMultiMode(!multiMode);
       });
     }
-    slot.insertBefore(toggleBtn, slot.firstChild);
-    // 原生按钮只在鼠标悬停 Recents 标题时展开；收起时由本按钮右侧留出同样宽度，位置保持不动
-    if (toggleResizeObserver) toggleResizeObserver.disconnect();
-    toggleResizeObserver = new ResizeObserver(reserveNativeSpace);
-    for (const c of slot.children) if (c !== toggleBtn) toggleResizeObserver.observe(c);
-    reserveNativeSpace();
+    // 固定在最右侧；原生按钮悬停展开时出现在它左边
+    slot.appendChild(toggleBtn);
     updateToggleButton();
-  }
-
-  let toggleResizeObserver = null;
-
-  // 收起的原生按钮宽度为 0、内容溢出隐藏，scrollWidth 即其展开后的宽度
-  function reserveNativeSpace() {
-    if (!toggleBtn || !toggleBtn.parentElement) return;
-    let hidden = 0;
-    for (const c of toggleBtn.parentElement.children) {
-      if (c !== toggleBtn) hidden += Math.max(0, c.scrollWidth - c.offsetWidth);
-    }
-    const value = hidden ? `${hidden}px` : '';
-    if (toggleBtn.style.marginInlineEnd !== value) toggleBtn.style.marginInlineEnd = value;
   }
 
   function updateToggleButton() {
