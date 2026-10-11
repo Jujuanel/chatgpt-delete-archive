@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
-// @version      2.0.1
+// @version      2.1.0
 // @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
 // @author       jujuanel
 // @match        https://chatgpt.com/*
@@ -10,6 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -126,13 +127,10 @@
 
   // 只补充 ChatGPT 没有对应组件的少量样式；颜色全部取自 ChatGPT 的 CSS 变量
   const CSS = `
+  /* 强调色跟随 ChatGPT 设置：原生开关等强调色控件使用 --color-chart-blue */
   :root {
-    --cgx-accent: var(--color-text);
-    --cgx-sel-bg: var(--color-background-primary-ghost-hover);
-  }
-  :root[data-cgx-accent="1"] {
-    --cgx-accent: var(--color-background-composer-primary);
-    --cgx-sel-bg: var(--app-color-background-accent, color-mix(in oklab, var(--color-background-composer-primary) 14%, transparent));
+    --cgx-accent: var(--color-chart-blue);
+    --cgx-sel-bg: var(--app-color-background-accent, color-mix(in oklab, var(--color-chart-blue) 14%, transparent));
   }
   .cgx-removed { display: none !important; }
 
@@ -173,16 +171,6 @@
     style.id = 'cgx-style';
     style.textContent = CSS;
     (document.head || document.documentElement).appendChild(style);
-  }
-
-  // 用户在 ChatGPT 设置里选了强调色时，发送按钮颜色不再是默认的黑 / 白
-  function syncAccent() {
-    const v = getComputedStyle(document.documentElement).getPropertyValue('--color-background-composer-primary').trim().toLowerCase();
-    const isDefault = !v || ['#000', '#000000', '#fff', '#ffffff', 'black', 'white', 'rgb(0, 0, 0)', 'rgb(255, 255, 255)'].includes(v);
-    const want = isDefault ? '0' : '1';
-    if (document.documentElement.getAttribute('data-cgx-accent') !== want) {
-      document.documentElement.setAttribute('data-cgx-accent', want);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -245,15 +233,28 @@
   // ---------------------------------------------------------------------------
 
   let tokenCache = { token: null, expires: 0 };
+  let tokenPromise = null;
 
-  async function getAccessToken() {
-    if (tokenCache.token && Date.now() < tokenCache.expires) return tokenCache.token;
-    const res = await fetch('/api/auth/session', { credentials: 'include' });
-    if (!res.ok) throw new Error(`获取登录信息失败（HTTP ${res.status}）`);
-    const data = await res.json();
-    if (!data.accessToken) throw new Error('未登录或无法获取 accessToken');
-    tokenCache = { token: data.accessToken, expires: Date.now() + 5 * 60 * 1000 };
-    return data.accessToken;
+  // accessToken 缓存到 JWT 过期前 1 分钟；页面加载后即预取，删除 / 归档时无需再等这一次请求
+  function getAccessToken() {
+    if (tokenCache.token && Date.now() < tokenCache.expires) return Promise.resolve(tokenCache.token);
+    if (!tokenPromise) {
+      tokenPromise = (async () => {
+        const res = await fetch('/api/auth/session', { credentials: 'include' });
+        if (!res.ok) throw new Error(`获取登录信息失败（HTTP ${res.status}）`);
+        const data = await res.json();
+        const token = data.accessToken;
+        if (!token) throw new Error('未登录或无法获取 accessToken');
+        let expires = Date.now() + 10 * 60 * 1000;
+        try {
+          const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+          if (payload.exp) expires = payload.exp * 1000 - 60 * 1000;
+        } catch (_) { /* 非 JWT 时使用默认有效期 */ }
+        tokenCache = { token, expires };
+        return token;
+      })().finally(() => { tokenPromise = null; });
+    }
+    return tokenPromise;
   }
 
   async function patchConversation(id, body) {
@@ -336,17 +337,43 @@
     }
   }
 
-  // 对话列表（Recents）的分组标题行；不依赖界面语言：取列表中含对话链接的那一组
+  // 请求失败时把乐观隐藏的对话放回侧边栏
+  function restoreRows(ids) {
+    for (const id of ids) removedIds.delete(id);
+    for (const a of getSidebarLinks()) {
+      if (ids.includes(idFromHref(a.getAttribute('href')))) getRowOf(a).classList.remove('cgx-removed');
+    }
+  }
+
+  // 对话列表（Recents）的分组标题行，不依赖界面语言。
+  // Projects 分组里的对话链接是 /g/<project>/c/<id>，Recents 里普通对话是 /c/<id>
   function getRecentsHeader() {
     return [...document.querySelectorAll('nav [class~="group/nav-section-title"]')]
-      .find((h) => h.parentElement && h.parentElement.querySelector('a[href*="/c/"]')) || null;
+      .find((h) => h.parentElement && h.parentElement.querySelector('a[href^="/c/"]')) || null;
+  }
+
+  // ChatGPT 的 React Router 实例，用它跳转与点击侧边栏链接效果相同
+  function pageRouter() {
+    try {
+      const w = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      const router = w.__reactRouterDataRouter;
+      return router && typeof router.navigate === 'function' ? router : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   async function navigateTo(path) {
-    const arrived = () => waitFor(() => location.pathname === path, 1000);
+    const router = pageRouter();
+    if (router) {
+      try {
+        router.navigate(path);
+        return;
+      } catch (_) { /* 退回到点击 */ }
+    }
     let target = null;
     if (path === '/') {
-      // “New chat” 链接只响应真实点击；Recents 标题右侧的 “New chat” 按钮（最后一个按钮）可以
+      // “New chat” 链接只响应真实点击；Recents 标题右侧最后一个按钮是 “New chat”
       const header = getRecentsHeader();
       const btns = header ? [...header.lastElementChild.querySelectorAll('button:not(.cgx-toggle)')] : [];
       target = btns[btns.length - 1] || null;
@@ -355,7 +382,7 @@
     }
     if (target) {
       target.click();
-      if (await arrived()) return;
+      if (await waitFor(() => location.pathname === path, 1000)) return;
     }
     location.assign(path);
   }
@@ -404,6 +431,7 @@
   // ---------------------------------------------------------------------------
 
   let busy = false;
+  const BATCH_CONCURRENCY = 6;
 
   // 通过侧边栏该对话的 “…” 菜单打开 ChatGPT 原生的 “Delete chat?” 确认框
   async function openNativeDeleteDialog(id) {
@@ -413,13 +441,13 @@
     const trigger = row.querySelector('button[aria-haspopup="menu"]');
     if (!trigger) return false;
     pressLike(trigger);
-    const item = await waitFor(() => document.querySelector('[role="menu"] [role="menuitem"].text-danger'));
+    const item = await waitFor(() => document.querySelector('[role="menu"] [role="menuitem"].text-danger'), 1500, 16);
     if (!item) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       return false;
     }
     item.click();
-    return !!(await waitFor(isNativeDialogOpen));
+    return !!(await waitFor(isNativeDialogOpen, 1500, 16));
   }
 
   async function deleteCurrent() {
@@ -428,8 +456,6 @@
       toast('当前不在任何对话中');
       return;
     }
-    if (busy) return;
-
     if (options.confirmDelete) {
       const nextId = neighborOf(id, [id]);
       if (await openNativeDeleteDialog(id)) {
@@ -450,26 +476,25 @@
       });
       if (!ok) return;
     }
-    await removeOne(id, 'delete');
+    removeOne(id, 'delete');
   }
 
+  // 乐观更新：立即离开并隐藏该对话，请求在后台完成；失败时恢复并提示
   async function removeOne(id, kind) {
-    busy = true;
+    const isDelete = kind === 'delete';
     const title = titleOf(id);
+    leaveConversation([id]); // 先跳转再隐藏，便于找到相邻对话
+    removedIds.add(id);
+    selected.delete(id);
+    hideRemovedRows();
+    renderBar();
+    toast(`${isDelete ? '已删除' : '已归档'}“${title}”`);
     try {
-      if (kind === 'delete') await deleteConversation(id);
+      if (isDelete) await deleteConversation(id);
       else await archiveConversation(id);
-      // 先跳转再隐藏，便于找到相邻对话
-      leaveConversation([id]);
-      removedIds.add(id);
-      selected.delete(id);
-      hideRemovedRows();
-      renderBar();
-      toast(`${kind === 'delete' ? '已删除' : '已归档'}“${title}”`);
     } catch (err) {
-      toast(`${kind === 'delete' ? '删除' : '归档'}失败：${err.message}`, true);
-    } finally {
-      busy = false;
+      restoreRows([id]);
+      toast(`${isDelete ? '删除' : '归档'}“${title}”失败（${err.message}），已恢复到侧边栏`, true);
     }
   }
 
@@ -479,7 +504,7 @@
       toast('当前不在任何对话中');
       return;
     }
-    if (!busy) removeOne(id, 'archive');
+    removeOne(id, 'archive');
   }
 
   // ---------------------------------------------------------------------------
@@ -595,11 +620,15 @@
     });
     if (!ok) return;
 
+    // 乐观更新：立即离开、隐藏并退出多选，请求在后台并发完成；失败的对话恢复并重新选中
     busy = true;
     const verb = isDelete ? '删除' : '归档';
-    renderBar(`${verb}中 0/${ids.length}`);
+    leaveConversation(ids);
+    for (const id of ids) removedIds.add(id);
+    setMultiMode(false);
+    toast(`已${verb} ${ids.length} 个对话`);
+
     const failed = [];
-    const done = [];
     let i = 0;
     const worker = async () => {
       while (i < ids.length) {
@@ -607,28 +636,22 @@
         try {
           if (isDelete) await deleteConversation(id);
           else await archiveConversation(id);
-          done.push(id);
         } catch (err) {
           failed.push({ id, err });
         }
-        renderBar(`${verb}中 ${done.length + failed.length}/${ids.length}`);
       }
     };
-    await Promise.all([worker(), worker(), worker()]);
-
-    leaveConversation(done);
-    for (const id of done) {
-      removedIds.add(id);
-      selected.delete(id);
-    }
+    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, ids.length) }, worker));
     busy = false;
-    decorateSidebar();
+
     if (failed.length) {
-      toast(`已${verb} ${done.length} 个，${failed.length} 个失败（${failed[0].err.message}），失败的对话仍保持选中`, true);
+      const failedIds = failed.map((f) => f.id);
+      restoreRows(failedIds);
+      setMultiMode(true);
+      for (const id of failedIds) selected.add(id);
+      decorateSidebar();
       renderBar();
-    } else {
-      toast(`已${verb} ${done.length} 个对话`);
-      setMultiMode(false);
+      toast(`${failed.length} 个对话${verb}失败（${failed[0].err.message}），已恢复并保持选中`, true);
     }
   }
 
@@ -1143,7 +1166,6 @@
 
   function init() {
     injectStyle();
-    syncAccent();
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('resize', () => { if (bar) placeBar(); });
 
@@ -1156,8 +1178,7 @@
     let lastPath = location.pathname;
     const tick = () => {
       scheduled = false;
-      syncAccent();
-      ensureToggleButton();
+        ensureToggleButton();
       if (multiMode || removedIds.size) decorateSidebar();
       if (location.pathname !== lastPath) {
         lastPath = location.pathname;
@@ -1170,10 +1191,8 @@
       requestAnimationFrame(tick);
     };
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-current', 'href'] });
-    // 强调色 / 主题切换会改动 <head> 中的样式和 <html> 属性
-    new MutationObserver(schedule).observe(document.head, { childList: true, subtree: true, characterData: true });
-    new MutationObserver(schedule).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
     tick();
+    getAccessToken().catch(() => { /* 未登录时忽略，操作时会再提示 */ });
   }
 
   init();

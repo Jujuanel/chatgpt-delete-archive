@@ -20,8 +20,10 @@
 ## 样式
 
 界面直接复用 ChatGPT 页面中的 class、图标 sprite 与 CSS 变量，跟随浅色/深色主题。
-强调色读取自 ChatGPT 设置（`--color-background-composer-primary` 等变量），切换后即时生效；使用默认强调色时为灰色主题。
+强调色跟随 ChatGPT 设置中用户选择的强调色（与原生开关相同的 `--color-chart-blue` 变量），切换后即时生效。
 
 ## 实现说明
 
 批量删除、归档、无确认删除调用网页端自身接口 `PATCH /backend-api/conversation/{id}`（`is_visible: false` / `is_archived: true`）。
+采用乐观更新：立即跳转并隐藏对话，请求在后台完成（批量 6 个并发），失败时恢复到侧边栏并提示。accessToken 在页面加载时预取并缓存到过期前。
+跳转使用 ChatGPT 自身的 React Router（`__reactRouterDataRouter.navigate`），因此脚本需要 `@grant unsafeWindow`。
