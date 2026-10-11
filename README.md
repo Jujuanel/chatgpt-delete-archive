@@ -1,24 +1,27 @@
 # ChatGPT 快捷删除 / 归档 / 多选批量删除（油猴脚本）
 
-适用于 https://chatgpt.com/ 。安装：在 Tampermonkey / Violentmonkey 中新建脚本，粘贴 `chatgpt-delete-archive.user.js` 的内容。
+适用于 https://chatgpt.com/ 。在 Tampermonkey 中安装 `chatgpt-delete-archive.user.js`。
 
 ## 功能
 
-| 功能 | 默认快捷键（macOS / Windows） |
-| --- | --- |
-| 删除当前对话（无确认） | ⌥⇧D / Alt+Shift+D |
-| 归档当前对话 | ⌥⇧A / Alt+Shift+A |
-| 开启 / 退出多选模式 | ⌥⇧M / Alt+Shift+M |
-| 多选：选中 / 取消选中当前对话 | ⌥⇧S / Alt+Shift+S |
-| 多选：删除已选对话（需确认） | 未设置 |
-| 打开设置 | ⌥⇧, / Alt+Shift+, |
+| 功能 | 默认快捷键（macOS） | Windows |
+| --- | --- | --- |
+| 删除当前对话 | ⌥⇧D | Alt+Shift+D |
+| 归档当前对话 | ⌥⇧A | Alt+Shift+A |
+| 开启 / 退出多选 | ⌥⇧M | Alt+Shift+M |
+| 选中 / 取消选中当前对话 | ⌥⇧S | Alt+Shift+S |
+| 删除已选对话 | 未设置 | 未设置 |
+| 打开设置 | ⌥⇧, | Alt+Shift+, |
 
-- **多选模式**：点侧边栏 “Recents” 标题右侧的「多选」按钮（或按快捷键）。此时每个对话左侧出现圆圈：
-  - 点击圆圈 = 选中/取消，不会跳转；Shift+点击圆圈可连续选择一段。
-  - 点击对话本身 = 正常打开查看；按快捷键选中正在查看的对话。
-  - 侧边栏底部的工具栏可「全选 / 清空 / 选中当前 / 归档 / 删除」，删除和归档会弹出列表二次确认。
-- **自定义快捷键**：脚本管理器菜单「⚙️ 快捷键设置」、工具栏的齿轮按钮或快捷键打开设置面板，点击按钮后按下新组合键即可；冲突会标红。也可设置删除/归档当前对话后是打开新对话还是侧边栏中的下一个对话。
+- **删除当前对话**：默认弹出 ChatGPT 原生的 “Delete chat?” 确认框（通过侧边栏该对话的菜单触发）；可在设置中关闭确认，改为直接删除。
+- **多选**：点击 Recents 标题右侧的多选图标或按快捷键。对话左侧出现圆圈，点圆圈选中，点对话本身正常打开查看；按快捷键选中正在查看的对话。顶部出现可拖动的工具栏（双击空白处复位），可全选、批量归档、批量删除（需确认）。
+- **设置**：仿 ChatGPT “Keyboard shortcuts” 对话框，修改即时生效；每个快捷键都可开关和重新录制。入口：工具栏齿轮、快捷键、Tampermonkey 菜单。
+
+## 样式
+
+界面直接复用 ChatGPT 页面中的 class、图标 sprite 与 CSS 变量，跟随浅色/深色主题。
+强调色读取自 ChatGPT 设置（`--color-background-composer-primary` 等变量），切换后即时生效；使用默认强调色时为灰色主题。
 
 ## 实现说明
 
-删除/归档直接调用 ChatGPT 网页端自身使用的接口 `PATCH /backend-api/conversation/{id}`（`is_visible: false` / `is_archived: true`），不依赖菜单点击，因此不受界面语言影响。操作成功后脚本会在侧边栏隐藏对应条目，并通过前端路由无刷新跳转。
+批量删除、归档、无确认删除调用网页端自身接口 `PATCH /backend-api/conversation/{id}`（`is_visible: false` / `is_archived: true`）。

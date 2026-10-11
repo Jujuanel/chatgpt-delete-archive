@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
-// @version      1.0.0
-// @description  快捷键直接删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。
+// @version      2.0.1
+// @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
 // @author       jujuanel
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -22,12 +22,12 @@
   // ---------------------------------------------------------------------------
 
   const ACTIONS = {
-    deleteCurrent: '删除当前对话（无确认）',
+    deleteCurrent: '删除当前对话',
     archiveCurrent: '归档当前对话',
-    toggleMultiSelect: '开启 / 退出多选模式',
-    toggleSelectCurrent: '多选：选中 / 取消选中当前对话',
-    deleteSelected: '多选：删除已选对话（需确认）',
-    openSettings: '打开设置',
+    toggleMultiSelect: '开启 / 退出多选',
+    toggleSelectCurrent: '选中 / 取消选中当前对话',
+    deleteSelected: '删除已选对话',
+    openSettings: '打开本设置',
   };
 
   // 快捷键使用 KeyboardEvent.code 表示，避免 macOS 上 Option 组合键改变 e.key
@@ -41,8 +41,10 @@
   };
 
   const DEFAULT_OPTIONS = {
-    // 删除/归档当前对话后跳转：'new' 新对话，'next' 侧边栏中相邻的下一个对话
-    afterRemove: 'new',
+    confirmDelete: true, // 删除当前对话前使用 ChatGPT 原生确认框
+    openNextAfterRemove: false, // 删除 / 归档当前对话后打开侧边栏中的下一个对话
+    disabled: {}, // 被关闭的快捷键 { action: true }
+    barPos: null, // 多选工具栏位置 { left, top }
   };
 
   const store = {
@@ -61,18 +63,137 @@
 
   let shortcuts = { ...DEFAULT_SHORTCUTS, ...store.get('shortcuts', {}) };
   let options = { ...DEFAULT_OPTIONS, ...store.get('options', {}) };
+  delete options.afterRemove; // v1 遗留字段
+
+  const saveShortcuts = () => store.set('shortcuts', shortcuts);
+  const saveOptions = () => store.set('options', options);
 
   // ---------------------------------------------------------------------------
-  // 快捷键工具
+  // ChatGPT 原生样式（直接复用页面里的 class，跟随浅色 / 深色主题）
   // ---------------------------------------------------------------------------
 
-  const MOD_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'];
+  const BTN_BASE = 'no-drag cursor-interaction items-center select-none disabled:cursor-default aria-disabled:cursor-default focus:outline-hidden disabled:opacity-40 aria-disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 whitespace-nowrap flex border gap-1';
+  const CLS = {
+    overlay: 'codex-dialog-overlay inset-0 z-50 pointer-events-auto fixed bg-(--color-dialog-overlay)',
+    // “Delete chat?” 确认框
+    alertDialog: 'codex-dialog z-50 outline-none left-1/2 -translate-x-1/2 -translate-y-1/2 top-1/2 fixed bg-surface-elevated-secondary/90 text-default ring-border ring-[0.5px] ring-border shadow-lg backdrop-blur-xl rounded-3xl max-w-[92vw] overflow-hidden w-105',
+    // “Keyboard shortcuts” 对话框
+    panelDialog: 'codex-dialog z-50 outline-none left-1/2 -translate-x-1/2 -translate-y-1/2 top-1/2 fixed dark:bg-surface-tertiary text-default bg-surface shadow-lg rounded-2xl max-w-[92vw] overflow-hidden w-150',
+    btnCancel: `${BTN_BASE} rounded-button-action border-default bg-primary-soft-alpha not-disabled:not-aria-disabled:hover:bg-primary-ghost-hover data-[state=open]:bg-primary-ghost-hover border px-4 py-1.5 text-base leading-[18px]`,
+    btnDanger: `${BTN_BASE} rounded-button-action bg-chart-red/10 not-disabled:not-aria-disabled:hover:bg-chart-red/20 text-chart-red border-transparent px-4 py-1.5 text-base leading-[18px]`,
+    btnPrimary: `${BTN_BASE} rounded-button-action border-default bg-primary-solid not-disabled:not-aria-disabled:hover:bg-text/80 text-primary-solid px-4 py-1.5 text-base leading-[18px]`,
+    btnRestore: `${BTN_BASE} rounded-full border-default bg-primary-solid not-disabled:not-aria-disabled:hover:bg-text/80 data-[state=open]:bg-text/80 text-primary-solid min-h-9 shrink-0 px-4 text-sm font-medium`,
+    btnKey: `${BTN_BASE} rounded-full text-secondary not-disabled:not-aria-disabled:hover:bg-primary-ghost-hover data-[state=open]:bg-primary-ghost-hover border-transparent button-toolbar py-0 text-sm leading-[18px]`,
+    btnCloseAlert: 'no-drag cursor-interaction leading-none hover:bg-primary-ghost-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 text-text/80 rounded p-1 absolute top-4 right-4',
+    btnClosePanel: 'no-drag cursor-interaction leading-none hover:bg-primary-ghost-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 text-text/80 flex items-center justify-center rounded-lg size-8 absolute top-3 right-3',
+    keyInput: 'min-w-0 border text-default outline-none placeholder:text-tertiary aria-invalid:border-text-danger aria-invalid:ring-2 aria-invalid:ring-text-danger/20 disabled:cursor-not-allowed disabled:text-secondary w-full h-token-button-composer rounded-md border-transparent bg-transparent px-2 text-sm focus:ring-1 focus:ring-ring focus:border-ring',
+    // 下拉菜单浮层（用于多选工具栏 / 提示）
+    popover: 'z-50 flex select-none bg-surface-elevated-secondary/90 text-default ring-(--color-border-overlay) ring-(length:--dropdown-overlay-ring-width) shadow-(--shadow-dropdown-overlay) backdrop-blur-sm rounded-2xl',
+  };
+
+  // ChatGPT 自带图标（sprite），找不到时退回内联 SVG
+  const FALLBACK_ICONS = {
+    'circle-light-16': '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.3"/>',
+    'circle-checkmark-fill-light-16': '<circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M5 8.2l2 2 4-4.4" fill="none" stroke="var(--color-surface,#fff)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+    'list-checkmark-circle-light-16': '<path d="M2.5 4.5l1 1 2-2M2.5 11l1 1 2-2M8 4.5h6M8 11h6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>',
+    'trash-light-16': '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>',
+    'archive-light-16': '<path d="M2.5 3.5h11v3h-11zM3.5 6.5v6h9v-6M6.5 9h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>',
+    'gear-light-16': '<circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6L5 5M11 11l1.4 1.4M3.6 12.4L5 11M11 5l1.4-1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+    'drag-light-16': '<g fill="currentColor"><circle cx="6" cy="4" r="1"/><circle cx="10" cy="4" r="1"/><circle cx="6" cy="8" r="1"/><circle cx="10" cy="8" r="1"/><circle cx="6" cy="12" r="1"/><circle cx="10" cy="12" r="1"/></g>',
+    'xmark-md-light-20': '<path d="M5.5 5.5l9 9M14.5 5.5l-9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
+  };
+
+  function spriteUrl() {
+    const use = document.querySelector('use[href*="/cdn/assets/icons-"]');
+    return use ? use.getAttribute('href').split('#')[0] : null;
+  }
+
+  function icon(name, size = 16, extraClass = '') {
+    const sprite = spriteUrl();
+    const vb = /-20$/.test(name) ? 20 : 16;
+    const inner = sprite
+      ? `<use href="${sprite}#${name}" fill="currentColor"></use>`
+      : (FALLBACK_ICONS[name] || '');
+    return `<svg aria-hidden="true" focusable="false" class="shrink-0 ${extraClass}" width="${size}" height="${size}" viewBox="0 0 ${vb} ${vb}" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+  }
+
+  function el(tag, cls, html) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (html !== undefined) node.innerHTML = html;
+    return node;
+  }
+
+  // 只补充 ChatGPT 没有对应组件的少量样式；颜色全部取自 ChatGPT 的 CSS 变量
+  const CSS = `
+  :root {
+    --cgx-accent: var(--color-text);
+    --cgx-sel-bg: var(--color-background-primary-ghost-hover);
+  }
+  :root[data-cgx-accent="1"] {
+    --cgx-accent: var(--color-background-composer-primary);
+    --cgx-sel-bg: var(--app-color-background-accent, color-mix(in oklab, var(--color-background-composer-primary) 14%, transparent));
+  }
+  .cgx-removed { display: none !important; }
+
+  .cgx-check {
+    position: relative; z-index: 1; pointer-events: auto;
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 20px; height: 20px; margin-inline-start: -2px; border-radius: 9999px;
+    color: var(--color-text-tertiary); cursor: pointer;
+  }
+  .cgx-check:hover { color: var(--color-text-secondary); }
+  .cgx-check[aria-checked="true"] { color: var(--cgx-accent); }
+  .cgx-selected > :first-child { background-color: var(--cgx-sel-bg) !important; }
+
+  .cgx-toggle[aria-pressed="true"] { color: var(--cgx-accent) !important; }
+
+  .cgx-switch-track { background-color: color-mix(in oklab, var(--color-text) 16%, transparent); }
+  .cgx-switch-track[data-state="checked"] { background-color: var(--cgx-accent); }
+  .cgx-switch-thumb { background-color: #fff; border-color: transparent; }
+
+  .cgx-bar { position: fixed; z-index: 45; align-items: center; gap: 2px; padding: 4px; touch-action: none; }
+  .cgx-bar .cgx-grip { display: flex; align-items: center; padding: 0 2px; color: var(--color-text-tertiary); cursor: grab; }
+  .cgx-bar.cgx-dragging, .cgx-bar.cgx-dragging .cgx-grip { cursor: grabbing; }
+  .cgx-bar .cgx-count { padding: 0 8px 0 2px; font-size: 14px; white-space: nowrap; cursor: grab; font-variant-numeric: tabular-nums; }
+  .cgx-bar .cgx-sep { width: 1px; align-self: stretch; margin: 6px 4px; background: var(--color-border-light, rgba(0,0,0,.1)); }
+  .cgx-bar button { height: 32px; padding: 0 10px; }
+  .cgx-bar button.cgx-icon-btn { width: 32px; padding: 0; justify-content: center; }
+
+  .cgx-toasts { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .cgx-toast { padding: 8px 14px; font-size: 14px; max-width: min(560px, 90vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cgx-toast.cgx-error { color: var(--color-chart-red); }
+
+  .cgx-list { margin: 12px 0 0; padding: 4px 0; max-height: 200px; overflow-y: auto; list-style: none; font-size: 14px; line-height: 20px; color: var(--color-text-secondary); }
+  .cgx-list li { padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  `;
+
+  function injectStyle() {
+    const style = document.createElement('style');
+    style.id = 'cgx-style';
+    style.textContent = CSS;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  // 用户在 ChatGPT 设置里选了强调色时，发送按钮颜色不再是默认的黑 / 白
+  function syncAccent() {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--color-background-composer-primary').trim().toLowerCase();
+    const isDefault = !v || ['#000', '#000000', '#fff', '#ffffff', 'black', 'white', 'rgb(0, 0, 0)', 'rgb(255, 255, 255)'].includes(v);
+    const want = isDefault ? '0' : '1';
+    if (document.documentElement.getAttribute('data-cgx-accent') !== want) {
+      document.documentElement.setAttribute('data-cgx-accent', want);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 快捷键工具（显示格式与 ChatGPT “Keyboard shortcuts” 一致）
+  // ---------------------------------------------------------------------------
+
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+  const MODIFIER_CODES = ['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight', 'MetaLeft', 'MetaRight', 'CapsLock', 'Fn'];
 
   function eventToCombo(e) {
-    if (['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight', 'MetaLeft', 'MetaRight'].includes(e.code)) {
-      return null;
-    }
+    if (!e.code || MODIFIER_CODES.includes(e.code)) return null;
     const parts = [];
     if (e.ctrlKey) parts.push('Ctrl');
     if (e.altKey) parts.push('Alt');
@@ -86,37 +207,37 @@
     return /(^|\+)(Ctrl|Alt|Meta)\+/.test(combo);
   }
 
-  function prettyCombo(combo) {
-    if (!combo) return '未设置';
-    return combo.split('+').map((p) => {
-      if (MOD_ORDER.includes(p)) {
-        if (!IS_MAC) return p === 'Meta' ? 'Win' : p;
-        return { Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Meta: '⌘' }[p];
-      }
-      return p
-        .replace(/^Key/, '')
-        .replace(/^Digit/, '')
-        .replace(/^Numpad/, 'Num')
-        .replace(/^Arrow/, '')
-        .replace('Backspace', '⌫')
-        .replace('Comma', ',')
-        .replace('Period', '.')
-        .replace('Slash', '/')
-        .replace('Semicolon', ';')
-        .replace('Quote', "'")
-        .replace('BracketLeft', '[')
-        .replace('BracketRight', ']')
-        .replace('Backslash', '\\')
-        .replace('Minus', '-')
-        .replace('Equal', '=')
-        .replace('Backquote', '`');
-    }).join(IS_MAC ? '' : '+');
+  const KEY_NAMES = {
+    Enter: '⏎', NumpadEnter: '⏎', Escape: 'Esc', Backspace: 'Backspace', Delete: 'Delete', Space: 'Space', Tab: 'Tab',
+    ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
+    Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']',
+    Backslash: '\\', Minus: '-', Equal: '=', Backquote: '`',
+  };
+
+  function keyName(code) {
+    if (KEY_NAMES[code]) return KEY_NAMES[code];
+    return code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num ');
   }
 
-  function isEditableTarget(el) {
-    if (!el) return false;
-    if (el.isContentEditable) return true;
-    return /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+  function prettyCombo(combo) {
+    if (!combo) return '';
+    const parts = combo.split('+');
+    const key = keyName(parts.pop());
+    if (IS_MAC) {
+      const glyph = { Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Meta: '⌘' };
+      return parts.map((p) => glyph[p]).join('') + key;
+    }
+    return [...parts.map((p) => (p === 'Meta' ? 'Win' : p)), key].join('+');
+  }
+
+  function activeCombo(action) {
+    return options.disabled[action] ? '' : shortcuts[action];
+  }
+
+  function isEditableTarget(node) {
+    if (!node) return false;
+    if (node.isContentEditable) return true;
+    return /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName);
   }
 
   // ---------------------------------------------------------------------------
@@ -156,6 +277,7 @@
   // ---------------------------------------------------------------------------
 
   const CONV_RE = /\/c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   function idFromHref(href) {
     const m = (href || '').match(CONV_RE);
@@ -170,14 +292,18 @@
     return [...document.querySelectorAll('nav a[href*="/c/"]')].filter((a) => idFromHref(a.getAttribute('href')));
   }
 
+  function linkOf(id) {
+    return getSidebarLinks().find((a) => idFromHref(a.getAttribute('href')) === id) || null;
+  }
+
   // 向上找到只包含这一个对话链接的最外层元素，即侧边栏列表中的一整行
   function getRowOf(link) {
-    let el = link;
-    while (el.parentElement && !el.parentElement.matches('nav') &&
-      el.parentElement.querySelectorAll('a[href*="/c/"]').length === 1) {
-      el = el.parentElement;
+    let node = link;
+    while (node.parentElement && !node.parentElement.matches('nav') &&
+      node.parentElement.querySelectorAll('a[href*="/c/"]').length === 1) {
+      node = node.parentElement;
     }
-    return el;
+    return node;
   }
 
   function getVisibleIdsInOrder() {
@@ -186,7 +312,7 @@
     for (const a of getSidebarLinks()) {
       const id = idFromHref(a.getAttribute('href'));
       const row = getRowOf(a);
-      if (!id || seen.has(id) || removedIds.has(id) || (row && row.offsetParent === null)) continue;
+      if (!id || seen.has(id) || removedIds.has(id) || row.offsetParent === null) continue;
       seen.add(id);
       ids.push(id);
     }
@@ -194,7 +320,7 @@
   }
 
   function titleOf(id) {
-    const a = getSidebarLinks().find((l) => idFromHref(l.getAttribute('href')) === id);
+    const a = linkOf(id);
     if (a) return (a.getAttribute('aria-label') || a.textContent || '').trim();
     if (id === getCurrentId()) return document.title.replace(/\s*[-|]\s*ChatGPT\s*$/, '');
     return id;
@@ -206,43 +332,72 @@
   function hideRemovedRows() {
     for (const a of getSidebarLinks()) {
       const id = idFromHref(a.getAttribute('href'));
-      if (id && removedIds.has(id)) {
-        const row = getRowOf(a);
-        if (row) row.classList.add('cgx-removed');
-      }
+      if (id && removedIds.has(id)) getRowOf(a).classList.add('cgx-removed');
     }
   }
 
-  function navigateTo(path) {
-    const link = [...document.querySelectorAll('nav a')].find((a) => a.getAttribute('href') === path);
-    if (link) {
-      link.click();
-      return;
-    }
-    // React Router 监听 popstate，可实现无刷新跳转
-    history.pushState({}, '', path);
-    window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+  // 对话列表（Recents）的分组标题行；不依赖界面语言：取列表中含对话链接的那一组
+  function getRecentsHeader() {
+    return [...document.querySelectorAll('nav [class~="group/nav-section-title"]')]
+      .find((h) => h.parentElement && h.parentElement.querySelector('a[href*="/c/"]')) || null;
   }
 
-  function leaveConversation(removedList) {
+  async function navigateTo(path) {
+    const arrived = () => waitFor(() => location.pathname === path, 1000);
+    let target = null;
+    if (path === '/') {
+      // “New chat” 链接只响应真实点击；Recents 标题右侧的 “New chat” 按钮（最后一个按钮）可以
+      const header = getRecentsHeader();
+      const btns = header ? [...header.lastElementChild.querySelectorAll('button:not(.cgx-toggle)')] : [];
+      target = btns[btns.length - 1] || null;
+    } else {
+      target = [...document.querySelectorAll('nav a')].find((a) => a.getAttribute('href') === path && a.offsetWidth > 0);
+    }
+    if (target) {
+      target.click();
+      if (await arrived()) return;
+    }
+    location.assign(path);
+  }
+
+  // 侧边栏中 id 之后（没有则之前）的对话
+  function neighborOf(id, exclude) {
+    const all = getSidebarLinks().map((a) => idFromHref(a.getAttribute('href')));
+    const order = getVisibleIdsInOrder().filter((x) => !exclude.includes(x));
+    const idx = all.indexOf(id);
+    if (idx < 0) return null;
+    return all.slice(idx + 1).find((x) => order.includes(x)) ||
+      all.slice(0, idx).reverse().find((x) => order.includes(x)) || null;
+  }
+
+  function leaveConversation(removedList, nextId) {
     const current = getCurrentId();
     if (!current || !removedList.includes(current)) return;
-    if (options.afterRemove === 'next') {
-      const order = getVisibleIdsInOrder();
-      // getVisibleIdsInOrder 已排除 removedIds，这里需要在移除前的顺序里找相邻项
-      const all = getSidebarLinks().map((a) => idFromHref(a.getAttribute('href')));
-      const idx = all.indexOf(current);
-      const after = all.slice(idx + 1).find((id) => order.includes(id));
-      const before = all.slice(0, Math.max(idx, 0)).reverse().find((id) => order.includes(id));
-      const target = after || before;
-      if (target) {
-        const a = getSidebarLinks().find((l) => idFromHref(l.getAttribute('href')) === target);
-        navigateTo(a.getAttribute('href'));
-        return;
-      }
-    }
-    navigateTo('/');
+    const target = options.openNextAfterRemove ? (nextId || neighborOf(current, removedList)) : null;
+    const link = target && linkOf(target);
+    navigateTo(link ? link.getAttribute('href') : '/');
   }
+
+  function pressLike(node) {
+    const o = { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse', isPrimary: true };
+    node.dispatchEvent(new PointerEvent('pointerdown', o));
+    node.dispatchEvent(new MouseEvent('mousedown', o));
+    node.dispatchEvent(new PointerEvent('pointerup', o));
+    node.dispatchEvent(new MouseEvent('mouseup', o));
+    node.dispatchEvent(new MouseEvent('click', o));
+  }
+
+  async function waitFor(fn, timeout = 1500, step = 50) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      const v = fn();
+      if (v) return v;
+      await sleep(step);
+    }
+    return null;
+  }
+
+  const isNativeDialogOpen = () => !!document.querySelector('.codex-dialog[data-state="open"]:not(.cgx-dialog)');
 
   // ---------------------------------------------------------------------------
   // 单个对话操作
@@ -250,30 +405,81 @@
 
   let busy = false;
 
-  async function removeCurrent(kind) {
+  // 通过侧边栏该对话的 “…” 菜单打开 ChatGPT 原生的 “Delete chat?” 确认框
+  async function openNativeDeleteDialog(id) {
+    const a = linkOf(id);
+    if (!a) return false;
+    const row = getRowOf(a);
+    const trigger = row.querySelector('button[aria-haspopup="menu"]');
+    if (!trigger) return false;
+    pressLike(trigger);
+    const item = await waitFor(() => document.querySelector('[role="menu"] [role="menuitem"].text-danger'));
+    if (!item) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return false;
+    }
+    item.click();
+    return !!(await waitFor(isNativeDialogOpen));
+  }
+
+  async function deleteCurrent() {
     const id = getCurrentId();
     if (!id) {
-      toast('当前不在任何对话中', 'warn');
+      toast('当前不在任何对话中');
       return;
     }
     if (busy) return;
+
+    if (options.confirmDelete) {
+      const nextId = neighborOf(id, [id]);
+      if (await openNativeDeleteDialog(id)) {
+        if (!options.openNextAfterRemove) return;
+        // 用户在原生确认框中确认删除后，ChatGPT 会离开该对话；此时再跳到下一个对话
+        await waitFor(() => !isNativeDialogOpen(), 10 * 60 * 1000, 150);
+        const left = await waitFor(() => getCurrentId() !== id, 3000);
+        const link = left && nextId && linkOf(nextId);
+        if (link) navigateTo(link.getAttribute('href'));
+        return;
+      }
+      // 侧边栏中找不到该对话（例如侧边栏已收起），使用同样外观的确认框
+      const ok = await confirmDialog({
+        title: '删除对话？',
+        description: `这将永久删除“${titleOf(id)}”，且无法撤销。`,
+        confirmText: '删除对话',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    await removeOne(id, 'delete');
+  }
+
+  async function removeOne(id, kind) {
     busy = true;
     const title = titleOf(id);
     try {
       if (kind === 'delete') await deleteConversation(id);
       else await archiveConversation(id);
-      // 先跳转再隐藏，便于 "next" 模式找到相邻对话
+      // 先跳转再隐藏，便于找到相邻对话
       leaveConversation([id]);
       removedIds.add(id);
       selected.delete(id);
       hideRemovedRows();
       renderBar();
-      toast(`${kind === 'delete' ? '已删除' : '已归档'}：${title}`, 'ok');
+      toast(`${kind === 'delete' ? '已删除' : '已归档'}“${title}”`);
     } catch (err) {
-      toast(`${kind === 'delete' ? '删除' : '归档'}失败：${err.message}`, 'error');
+      toast(`${kind === 'delete' ? '删除' : '归档'}失败：${err.message}`, true);
     } finally {
       busy = false;
     }
+  }
+
+  function archiveCurrent() {
+    const id = getCurrentId();
+    if (!id) {
+      toast('当前不在任何对话中');
+      return;
+    }
+    if (!busy) removeOne(id, 'archive');
   }
 
   // ---------------------------------------------------------------------------
@@ -286,7 +492,6 @@
 
   function setMultiMode(on) {
     multiMode = on;
-    document.documentElement.classList.toggle('cgx-multi', on);
     if (!on) {
       selected.clear();
       lastClickedId = null;
@@ -307,28 +512,31 @@
   function toggleSelectCurrent() {
     const id = getCurrentId();
     if (!id) {
-      toast('当前不在任何对话中', 'warn');
+      toast('当前不在任何对话中');
       return;
     }
     if (!multiMode) setMultiMode(true);
     toggleSelect(id);
     lastClickedId = id;
-    toast(selected.has(id) ? `已选中：${titleOf(id)}` : `已取消选中：${titleOf(id)}`, 'info', 1200);
+  }
+
+  function renderCheck(check, on) {
+    check.setAttribute('aria-checked', String(on));
+    check.innerHTML = icon(on ? 'circle-checkmark-fill-light-16' : 'circle-light-16', 18);
   }
 
   function makeCheck(id) {
-    const btn = document.createElement('span');
-    btn.className = 'cgx-check';
-    btn.setAttribute('role', 'checkbox');
-    btn.setAttribute('tabindex', '-1');
-    btn.dataset.cgxId = id;
-    btn.title = '选中 / 取消选中（Shift+点击可连续选择）';
-    btn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const check = el('span', 'cgx-check');
+    check.setAttribute('role', 'checkbox');
+    check.dataset.cgxId = id;
+    check.title = '选中 / 取消选中';
+    renderCheck(check, false);
     const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
-    btn.addEventListener('pointerdown', stop, true);
-    btn.addEventListener('mousedown', stop, true);
-    btn.addEventListener('click', (e) => {
+    check.addEventListener('pointerdown', stop, true);
+    check.addEventListener('mousedown', stop, true);
+    check.addEventListener('click', (e) => {
       stop(e);
+      // 按住 Shift 点击圆圈：连续选择
       if (e.shiftKey && lastClickedId && lastClickedId !== id) {
         const order = getVisibleIdsInOrder();
         const a = order.indexOf(lastClickedId);
@@ -338,16 +546,16 @@
           for (const x of order.slice(Math.min(a, b), Math.max(a, b) + 1)) {
             if (target) selected.add(x); else selected.delete(x);
           }
+          lastClickedId = id;
           decorateSidebar();
           renderBar();
-          lastClickedId = id;
           return;
         }
       }
       toggleSelect(id);
       lastClickedId = id;
     }, true);
-    return btn;
+    return check;
   }
 
   function decorateSidebar() {
@@ -368,31 +576,28 @@
         check.remove();
         check = null;
       }
-      const row = getRowOf(a);
       const isSel = multiMode && selected.has(id);
-      if (check) check.setAttribute('aria-checked', String(isSel));
-      if (row) row.classList.toggle('cgx-selected', isSel);
+      if (check && check.getAttribute('aria-checked') !== String(isSel)) renderCheck(check, isSel);
+      getRowOf(a).classList.toggle('cgx-selected', isSel);
     }
   }
 
   async function runBatch(kind) {
     const ids = [...selected].filter((id) => !removedIds.has(id));
-    if (!ids.length) {
-      toast('还没有选中任何对话', 'warn');
-      return;
-    }
-    const verb = kind === 'delete' ? '删除' : '归档';
+    if (!ids.length || busy) return;
+    const isDelete = kind === 'delete';
     const ok = await confirmDialog({
-      title: `${verb} ${ids.length} 个对话？`,
-      body: ids.map((id) => titleOf(id)),
-      danger: kind === 'delete',
-      confirmText: verb,
-      note: kind === 'delete' ? '删除后无法在侧边栏恢复。' : '归档后可在 设置 → 数据控制 → 已归档的聊天 中找回。',
+      title: isDelete ? `删除 ${ids.length} 个对话？` : `归档 ${ids.length} 个对话？`,
+      description: isDelete ? '这将永久删除以下对话，且无法撤销。' : '归档后可在 设置 → 数据控制 → 已归档的聊天 中找回。',
+      list: ids.map((id) => titleOf(id)),
+      confirmText: isDelete ? '删除' : '归档',
+      danger: isDelete,
     });
     if (!ok) return;
 
     busy = true;
-    renderBar(`${verb}中… 0/${ids.length}`);
+    const verb = isDelete ? '删除' : '归档';
+    renderBar(`${verb}中 0/${ids.length}`);
     const failed = [];
     const done = [];
     let i = 0;
@@ -400,13 +605,13 @@
       while (i < ids.length) {
         const id = ids[i++];
         try {
-          if (kind === 'delete') await deleteConversation(id);
+          if (isDelete) await deleteConversation(id);
           else await archiveConversation(id);
           done.push(id);
         } catch (err) {
           failed.push({ id, err });
         }
-        renderBar(`${verb}中… ${done.length + failed.length}/${ids.length}`);
+        renderBar(`${verb}中 ${done.length + failed.length}/${ids.length}`);
       }
     };
     await Promise.all([worker(), worker(), worker()]);
@@ -419,171 +624,36 @@
     busy = false;
     decorateSidebar();
     if (failed.length) {
-      toast(`已${verb} ${done.length} 个，${failed.length} 个失败（${failed[0].err.message}），失败项仍保持选中`, 'error', 5000);
+      toast(`已${verb} ${done.length} 个，${failed.length} 个失败（${failed[0].err.message}），失败的对话仍保持选中`, true);
       renderBar();
     } else {
-      toast(`已${verb} ${done.length} 个对话`, 'ok');
+      toast(`已${verb} ${done.length} 个对话`);
       setMultiMode(false);
     }
   }
 
   // ---------------------------------------------------------------------------
-  // UI：多选工具栏 / 侧边栏按钮 / Toast / 确认框 / 设置
+  // UI：侧边栏多选按钮
   // ---------------------------------------------------------------------------
 
-  const CSS = `
-  :root {
-    --cgx-accent: #10a37f;
-    --cgx-danger: #e5484d;
-    --cgx-bg: #ffffff;
-    --cgx-fg: #0d0d0d;
-    --cgx-muted: #6b6b6b;
-    --cgx-border: rgba(0,0,0,.1);
-    --cgx-hover: rgba(0,0,0,.05);
-    --cgx-sel: rgba(16,163,127,.12);
-    --cgx-shadow: 0 8px 28px rgba(0,0,0,.16);
-  }
-  html.dark, html[data-theme="dark"], .dark {
-    --cgx-bg: #2a2a2a;
-    --cgx-fg: #ececec;
-    --cgx-muted: #a0a0a0;
-    --cgx-border: rgba(255,255,255,.12);
-    --cgx-hover: rgba(255,255,255,.07);
-    --cgx-sel: rgba(16,163,127,.22);
-    --cgx-shadow: 0 8px 28px rgba(0,0,0,.5);
-  }
-  .cgx-removed { display: none !important; }
-
-  .cgx-check {
-    position: relative; z-index: 1; pointer-events: auto;
-    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-    width: 18px; height: 18px; border-radius: 50%;
-    border: 1.5px solid var(--cgx-muted); color: transparent;
-    cursor: pointer; transition: background .12s, border-color .12s, transform .12s;
-  }
-  .cgx-check:hover { border-color: var(--cgx-accent); transform: scale(1.08); }
-  .cgx-check svg { width: 12px; height: 12px; }
-  .cgx-check[aria-checked="true"] { background: var(--cgx-accent); border-color: var(--cgx-accent); color: #fff; }
-  .cgx-selected > :first-child { background-color: var(--cgx-sel); border-radius: 10px; }
-
-  .cgx-toggle {
-    display: inline-flex; align-items: center; gap: 4px;
-    height: 24px; padding: 0 8px; border-radius: 999px;
-    font-size: 12px; line-height: 1; color: var(--cgx-muted);
-    border: 1px solid var(--cgx-border); background: transparent; cursor: pointer;
-  }
-  .cgx-toggle:hover { background: var(--cgx-hover); color: var(--cgx-fg); }
-  .cgx-toggle.cgx-on { background: var(--cgx-accent); border-color: var(--cgx-accent); color: #fff; }
-  .cgx-toggle svg { width: 13px; height: 13px; }
-
-  .cgx-bar {
-    position: fixed; left: 16px; bottom: 16px; width: 300px;
-    z-index: 2147483000; display: flex; flex-direction: column; gap: 8px;
-    padding: 10px; border-radius: 14px; box-sizing: border-box;
-    background: var(--cgx-bg); color: var(--cgx-fg);
-    border: 1px solid var(--cgx-border); box-shadow: var(--cgx-shadow);
-    font-size: 13px; font-family: inherit;
-  }
-  .cgx-bar-row { display: flex; align-items: center; gap: 4px; }
-  .cgx-bar-row > .cgx-btn.cgx-grow { flex: 1; }
-  .cgx-bar .cgx-count { font-weight: 600; margin-right: auto; padding-left: 4px; white-space: nowrap; }
-  .cgx-bar .cgx-hint { color: var(--cgx-muted); font-size: 12px; padding: 0 4px; line-height: 1.4; }
-  .cgx-btn.cgx-ghost { border-color: transparent; height: 26px; padding: 0 8px; font-size: 12px; color: var(--cgx-muted); }
-  .cgx-btn.cgx-ghost:hover:not(:disabled) { color: var(--cgx-fg); }
-  .cgx-btn {
-    height: 30px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--cgx-border);
-    background: transparent; color: var(--cgx-fg); font-size: 13px; cursor: pointer; white-space: nowrap;
-  }
-  .cgx-btn:hover:not(:disabled) { background: var(--cgx-hover); }
-  .cgx-btn:disabled { opacity: .45; cursor: default; }
-  .cgx-btn.cgx-danger { background: var(--cgx-danger); border-color: var(--cgx-danger); color: #fff; }
-  .cgx-btn.cgx-danger:hover:not(:disabled) { filter: brightness(1.08); background: var(--cgx-danger); }
-  .cgx-btn.cgx-primary { background: var(--cgx-accent); border-color: var(--cgx-accent); color: #fff; }
-  .cgx-btn.cgx-icon { width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-  .cgx-btn.cgx-icon svg { width: 16px; height: 16px; }
-
-  .cgx-toasts { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 2147483647; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-  .cgx-toast {
-    padding: 9px 14px; border-radius: 10px; font-size: 13px; max-width: 80vw;
-    background: var(--cgx-bg); color: var(--cgx-fg); border: 1px solid var(--cgx-border); box-shadow: var(--cgx-shadow);
-    border-left: 4px solid var(--cgx-accent); animation: cgx-in .15s ease-out;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .cgx-toast.cgx-error { border-left-color: var(--cgx-danger); }
-  .cgx-toast.cgx-warn { border-left-color: #f5a524; }
-  .cgx-toast.cgx-info { border-left-color: var(--cgx-muted); }
-  @keyframes cgx-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
-
-  .cgx-overlay {
-    position: fixed; inset: 0; z-index: 2147483646; background: rgba(0,0,0,.45);
-    display: flex; align-items: center; justify-content: center; padding: 16px;
-  }
-  .cgx-modal {
-    width: 440px; max-width: 100%; max-height: calc(100vh - 32px); overflow: auto;
-    background: var(--cgx-bg); color: var(--cgx-fg); border-radius: 16px; box-shadow: var(--cgx-shadow);
-    padding: 20px; font-size: 14px; font-family: inherit;
-  }
-  .cgx-modal h3 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
-  .cgx-modal .cgx-list { margin: 0 0 12px; padding: 8px 10px; max-height: 240px; overflow: auto; border: 1px solid var(--cgx-border); border-radius: 10px; list-style: none; }
-  .cgx-modal .cgx-list li { padding: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cgx-modal .cgx-note { color: var(--cgx-muted); font-size: 12px; margin: 0 0 16px; }
-  .cgx-modal .cgx-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-  .cgx-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--cgx-border); }
-  .cgx-row:last-child { border-bottom: 0; }
-  .cgx-row .cgx-label { flex: 1; min-width: 0; }
-  .cgx-key {
-    min-width: 120px; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--cgx-border);
-    background: var(--cgx-hover); color: var(--cgx-fg); font-size: 13px; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  .cgx-key.cgx-recording { border-color: var(--cgx-accent); box-shadow: 0 0 0 2px var(--cgx-sel); }
-  .cgx-key.cgx-conflict { border-color: var(--cgx-danger); }
-  .cgx-clear { background: none; border: 0; color: var(--cgx-muted); cursor: pointer; font-size: 16px; padding: 0 4px; }
-  .cgx-select { height: 30px; border-radius: 8px; border: 1px solid var(--cgx-border); background: var(--cgx-bg); color: var(--cgx-fg); padding: 0 8px; }
-  .cgx-section { margin: 14px 0 4px; font-size: 12px; color: var(--cgx-muted); text-transform: uppercase; letter-spacing: .04em; }
-  `;
-
-  function injectStyle() {
-    const style = document.createElement('style');
-    style.id = 'cgx-style';
-    style.textContent = CSS;
-    (document.head || document.documentElement).appendChild(style);
-  }
-
-  const ICON_MULTI = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4" cy="4.5" r="2"/><path d="M8 4.5h6"/><circle cx="4" cy="11.5" r="2"/><path d="M8 11.5h6"/></svg>';
-  const ICON_CLOSE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
-  const ICON_GEAR = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></svg>';
-
-  // ---- Toast ----
-  let toastBox = null;
-  function toast(msg, type = 'ok', ms = 2600) {
-    if (!toastBox || !toastBox.isConnected) {
-      toastBox = document.createElement('div');
-      toastBox.className = 'cgx-toasts';
-      document.body.appendChild(toastBox);
-    }
-    const el = document.createElement('div');
-    el.className = `cgx-toast cgx-${type}`;
-    el.textContent = msg;
-    toastBox.appendChild(el);
-    setTimeout(() => el.remove(), ms);
-  }
-
-  // ---- 侧边栏的多选开关 ----
   let toggleBtn = null;
+
   function ensureToggleButton() {
     if (toggleBtn && toggleBtn.isConnected) return;
-    const anchor = document.querySelector('nav button[aria-label="Chat sidebar options"], nav button[aria-label="Filter chats and work"]');
-    const holder = anchor && anchor.closest('[class~="group/nav-section-title"]');
-    const slot = holder && holder.lastElementChild;
-    if (!slot) {
-      // 侧边栏收起或结构变化时不显示按钮，可用快捷键或脚本菜单开启
-      if (toggleBtn && toggleBtn.isConnected) toggleBtn.remove();
-      return;
-    }
+    // 复用 “Recents” 标题右侧原生图标按钮的样式
+    const header = getRecentsHeader();
+    const slot = header && header.lastElementChild;
+    const native = slot && slot.querySelector('button:not(.cgx-toggle)');
+    if (!native) return;
     if (!toggleBtn) {
-      toggleBtn = document.createElement('button');
+      toggleBtn = native.cloneNode(false);
+      for (const attr of [...toggleBtn.attributes]) {
+        if (/^(id|aria-|data-state)/.test(attr.name)) toggleBtn.removeAttribute(attr.name);
+      }
+      toggleBtn.classList.add('cgx-toggle');
       toggleBtn.type = 'button';
-      toggleBtn.className = 'cgx-toggle';
+      const innerCls = native.firstElementChild ? native.firstElementChild.className : '';
+      toggleBtn.innerHTML = `<span class="${innerCls}">${icon('list-checkmark-circle-light-16')}</span>`;
       toggleBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -596,293 +666,445 @@
 
   function updateToggleButton() {
     if (!toggleBtn) return;
-    toggleBtn.classList.toggle('cgx-on', multiMode);
-    toggleBtn.innerHTML = `${ICON_MULTI}<span>${multiMode ? '完成' : '多选'}</span>`;
-    toggleBtn.title = `${multiMode ? '退出' : '开启'}多选模式（${prettyCombo(shortcuts.toggleMultiSelect)}）`;
+    toggleBtn.setAttribute('aria-pressed', String(multiMode));
+    const combo = prettyCombo(activeCombo('toggleMultiSelect'));
+    const label = multiMode ? '退出多选' : '多选';
+    toggleBtn.setAttribute('aria-label', label);
+    toggleBtn.title = combo ? `${label}（${combo}）` : label;
   }
 
-  // ---- 底部多选工具栏 ----
+  // ---------------------------------------------------------------------------
+  // UI：多选工具栏（可拖动的浮层，样式同 ChatGPT 下拉菜单）
+  // ---------------------------------------------------------------------------
+
   let bar = null;
+
   function renderBar(progressText) {
     if (!multiMode) {
       if (bar) bar.remove();
       bar = null;
       return;
     }
-    if (!bar || !bar.isConnected) {
-      bar = document.createElement('div');
-      bar.className = 'cgx-bar';
+    const fresh = !bar || !bar.isConnected;
+    if (fresh) {
+      bar = el('div', `${CLS.popover} cgx-bar`);
+      bar.setAttribute('role', 'toolbar');
+      bar.setAttribute('aria-label', '多选');
       document.body.appendChild(bar);
+      enableDrag(bar);
     }
     const n = [...selected].filter((id) => !removedIds.has(id)).length;
-    const cur = getCurrentId();
-    const curSelected = cur && selected.has(cur);
     bar.innerHTML = '';
-    const row = () => {
-      const r = document.createElement('div');
-      r.className = 'cgx-bar-row';
-      bar.appendChild(r);
-      return r;
-    };
-    const mk = (parent, html, cls, onClick, disabled, title) => {
-      const b = document.createElement('button');
+
+    const grip = el('span', 'cgx-grip', icon('drag-light-16'));
+    grip.title = '拖动';
+    bar.appendChild(grip);
+    const count = el('span', 'cgx-count');
+    count.textContent = progressText || (n ? `已选 ${n} 项` : '未选择对话');
+    count.title = `点击对话左侧圆圈，或按 ${prettyCombo(activeCombo('toggleSelectCurrent')) || '快捷键'} 选中正在查看的对话`;
+    bar.appendChild(count);
+
+    const mk = (html, onClick, { disabled, title, danger, iconOnly } = {}) => {
+      const b = el('button', `${danger ? CLS.btnKey.replace('text-secondary', 'text-chart-red') : CLS.btnKey}${iconOnly ? ' cgx-icon-btn' : ''}`, html);
       b.type = 'button';
-      b.className = `cgx-btn ${cls || ''}`;
-      b.innerHTML = html;
       b.disabled = !!disabled || busy;
-      if (title) b.title = title;
+      if (title) {
+        b.title = title;
+        b.setAttribute('aria-label', title);
+      }
       b.addEventListener('click', onClick);
-      parent.appendChild(b);
+      bar.appendChild(b);
       return b;
     };
 
-    const top = row();
-    const count = document.createElement('span');
-    count.className = 'cgx-count';
-    count.textContent = progressText || `已选 ${n} 项`;
-    top.appendChild(count);
-    mk(top, '全选', 'cgx-ghost', () => {
-      const ids = getVisibleIdsInOrder();
-      const allOn = ids.length && ids.every((id) => selected.has(id));
-      for (const id of ids) { if (allOn) selected.delete(id); else selected.add(id); }
+    const ids = getVisibleIdsInOrder();
+    const allOn = ids.length > 0 && ids.every((id) => selected.has(id));
+    mk(allOn ? '取消全选' : '全选', () => {
+      for (const id of getVisibleIdsInOrder()) { if (allOn) selected.delete(id); else selected.add(id); }
       decorateSidebar();
       renderBar();
-    }, false, '选中 / 取消选中侧边栏中所有已加载的对话');
-    mk(top, '清空', 'cgx-ghost', () => { selected.clear(); decorateSidebar(); renderBar(); }, n === 0);
-    mk(top, ICON_GEAR, 'cgx-ghost cgx-icon', openSettings, false, '快捷键设置');
-    mk(top, ICON_CLOSE, 'cgx-ghost cgx-icon', () => setMultiMode(false), false, `退出多选（${prettyCombo(shortcuts.toggleMultiSelect)}）`);
+    }, { title: '选中侧边栏中已加载的全部对话' });
+    bar.appendChild(el('span', 'cgx-sep'));
+    mk(`${icon('archive-light-16')}<span>归档</span>`, () => runBatch('archive'), { disabled: n === 0 });
+    const delCombo = prettyCombo(activeCombo('deleteSelected'));
+    mk(`${icon('trash-light-16')}<span>删除</span>`, () => runBatch('delete'), { disabled: n === 0, danger: true, title: delCombo ? `删除（${delCombo}）` : '' });
+    bar.appendChild(el('span', 'cgx-sep'));
+    mk(icon('gear-light-16'), openSettings, { iconOnly: true, title: '设置' });
+    const exitCombo = prettyCombo(activeCombo('toggleMultiSelect'));
+    mk(icon('xmark-md-light-20', 16), () => setMultiMode(false), { iconOnly: true, title: exitCombo ? `退出多选（${exitCombo}）` : '退出多选' });
 
-    if (!progressText && n === 0) {
-      const hint = document.createElement('div');
-      hint.className = 'cgx-hint';
-      hint.textContent = `点击对话左侧圆圈，或按 ${prettyCombo(shortcuts.toggleSelectCurrent)} 选中正在查看的对话；Shift+点击可连续选择。`;
-      bar.appendChild(hint);
-    }
-
-    const actions = row();
-    if (cur) {
-      mk(actions, curSelected ? '取消当前' : '选中当前', 'cgx-grow', () => { toggleSelect(cur); lastClickedId = cur; }, false,
-        `${curSelected ? '取消选中' : '选中'}正在查看的对话（${prettyCombo(shortcuts.toggleSelectCurrent)}）`);
-    }
-    mk(actions, '归档', 'cgx-grow', () => runBatch('archive'), n === 0);
-    mk(actions, `删除${n ? ` (${n})` : ''}`, 'cgx-grow cgx-danger', () => runBatch('delete'), n === 0,
-      shortcuts.deleteSelected ? `快捷键 ${prettyCombo(shortcuts.deleteSelected)}` : '');
-    positionBar();
+    if (fresh) placeBar();
   }
 
-  // 工具栏停靠在侧边栏底部（用户头像上方）；侧边栏收起时停靠在左下角
-  function positionBar() {
+  function placeBar() {
     if (!bar) return;
-    const nav = document.querySelector('nav');
-    const side = nav && (nav.closest('aside, [role="complementary"]') || nav);
-    const r = side && side.getBoundingClientRect();
-    if (r && r.width > 200 && r.right > 0) {
-      bar.style.left = `${Math.max(r.left, 0) + 8}px`;
-      bar.style.width = `${r.width - 16}px`;
-      bar.style.bottom = '72px';
-    } else {
-      bar.style.left = '16px';
-      bar.style.width = '300px';
-      bar.style.bottom = '16px';
+    const w = bar.offsetWidth;
+    const h = bar.offsetHeight;
+    let { left, top } = options.barPos || {};
+    if (typeof left !== 'number') {
+      // 默认：主内容区顶部居中（标题栏下方），不遮挡侧边栏和输入框
+      const nav = document.querySelector('nav');
+      const side = nav && nav.closest('aside, [role="complementary"]');
+      const sr = side ? side.getBoundingClientRect() : null;
+      const mainLeft = sr && sr.width > 100 ? sr.right : 0;
+      left = mainLeft + (window.innerWidth - mainLeft - w) / 2;
+      top = 64;
     }
+    left = Math.min(Math.max(8, left), window.innerWidth - w - 8);
+    top = Math.min(Math.max(8, top), window.innerHeight - h - 8);
+    bar.style.left = `${left}px`;
+    bar.style.top = `${top}px`;
   }
 
-  // ---- 确认框 ----
-  function confirmDialog({ title, body, note, confirmText, danger }) {
+  function enableDrag(node) {
+    let start = null;
+    node.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      e.preventDefault();
+      const r = node.getBoundingClientRect();
+      start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
+      node.setPointerCapture(e.pointerId);
+      node.classList.add('cgx-dragging');
+    });
+    node.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      const left = Math.min(Math.max(8, start.left + e.clientX - start.x), window.innerWidth - node.offsetWidth - 8);
+      const top = Math.min(Math.max(8, start.top + e.clientY - start.y), window.innerHeight - node.offsetHeight - 8);
+      node.style.left = `${left}px`;
+      node.style.top = `${top}px`;
+    });
+    const end = () => {
+      if (!start) return;
+      start = null;
+      node.classList.remove('cgx-dragging');
+      options.barPos = { left: parseFloat(node.style.left), top: parseFloat(node.style.top) };
+      saveOptions();
+    };
+    node.addEventListener('pointerup', end);
+    node.addEventListener('pointercancel', end);
+    node.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button')) return;
+      options.barPos = null; // 双击复位
+      saveOptions();
+      placeBar();
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI：提示
+  // ---------------------------------------------------------------------------
+
+  let toastBox = null;
+  function toast(msg, isError = false) {
+    if (!toastBox || !toastBox.isConnected) {
+      toastBox = el('div', 'cgx-toasts');
+      document.body.appendChild(toastBox);
+    }
+    const t = el('div', `${CLS.popover} cgx-toast${isError ? ' cgx-error' : ''}`);
+    t.setAttribute('role', 'status');
+    t.textContent = msg;
+    toastBox.appendChild(t);
+    setTimeout(() => t.remove(), isError ? 5000 : 2500);
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI：对话框（结构与 class 取自 ChatGPT 原生对话框）
+  // ---------------------------------------------------------------------------
+
+  function openModal(dialogCls, labelText) {
+    const overlay = el('div', CLS.overlay);
+    overlay.setAttribute('data-state', 'open');
+    const dialog = el('div', `${dialogCls} cgx-dialog`);
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', labelText);
+    dialog.setAttribute('data-state', 'open');
+    dialog.tabIndex = -1;
+    document.body.append(overlay, dialog);
+    const close = () => {
+      overlay.remove();
+      dialog.remove();
+    };
+    return { overlay, dialog, close };
+  }
+
+  function confirmDialog({ title, description, list, confirmText, danger }) {
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'cgx-overlay';
-      const modal = document.createElement('div');
-      modal.className = 'cgx-modal';
-      modal.setAttribute('role', 'dialog');
-      modal.setAttribute('aria-modal', 'true');
-      const h = document.createElement('h3');
+      const { overlay, dialog, close } = openModal(CLS.alertDialog, title);
+      const form = el('form', 'flex flex-col text-base leading-normal tracking-normal gap-0');
+      form.style.padding = '20px';
+      const head = el('div', 'flex min-w-0 flex-1 flex-col gap-1 self-stretch');
+      const h = el('div', 'heading-dialog min-w-0 font-semibold');
       h.textContent = title;
-      modal.appendChild(h);
-      if (body && body.length) {
-        const ul = document.createElement('ul');
-        ul.className = 'cgx-list';
-        for (const line of body) {
-          const li = document.createElement('li');
+      h.style.paddingRight = '28px';
+      const p = el('div', 'text-codex-description text-base leading-normal tracking-normal');
+      p.textContent = description;
+      head.append(h, p);
+      form.appendChild(head);
+      if (list && list.length) {
+        const ul = el('ul', 'cgx-list');
+        for (const line of list) {
+          const li = el('li');
           li.textContent = line;
           li.title = line;
           ul.appendChild(li);
         }
-        modal.appendChild(ul);
+        form.appendChild(ul);
       }
-      if (note) {
-        const p = document.createElement('p');
-        p.className = 'cgx-note';
-        p.textContent = note;
-        modal.appendChild(p);
-      }
-      const actions = document.createElement('div');
-      actions.className = 'cgx-actions';
-      const cancel = document.createElement('button');
-      cancel.className = 'cgx-btn';
+      const footer = el('div', 'flex w-full flex-wrap items-center justify-end gap-3');
+      footer.style.paddingTop = '12px';
+      const cancel = el('button', CLS.btnCancel);
+      cancel.type = 'button';
       cancel.textContent = '取消';
-      const ok = document.createElement('button');
-      ok.className = `cgx-btn ${danger ? 'cgx-danger' : 'cgx-primary'}`;
-      ok.textContent = confirmText || '确定';
-      actions.append(cancel, ok);
-      modal.appendChild(actions);
-      overlay.appendChild(modal);
-      document.body.appendChild(overlay);
+      const ok = el('button', danger ? CLS.btnDanger : CLS.btnPrimary);
+      ok.type = 'submit';
+      ok.textContent = confirmText;
+      footer.append(cancel, ok);
+      form.appendChild(footer);
+      const x = el('button', CLS.btnCloseAlert, `${icon('xmark-md-light-20', 20)}<span class="sr-only">关闭</span>`);
+      x.type = 'button';
+      dialog.append(form, x);
 
-      const close = (v) => {
+      const done = (v) => {
         document.removeEventListener('keydown', onKey, true);
-        overlay.remove();
+        close();
         resolve(v);
       };
       const onKey = (e) => {
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
-        else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(true); }
+        e.stopPropagation();
+        if (e.key === 'Escape') { e.preventDefault(); done(false); }
       };
       document.addEventListener('keydown', onKey, true);
-      cancel.addEventListener('click', () => close(false));
-      ok.addEventListener('click', () => close(true));
-      overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(false); });
-      ok.focus();
+      form.addEventListener('submit', (e) => { e.preventDefault(); done(true); });
+      cancel.addEventListener('click', () => done(false));
+      x.addEventListener('click', () => done(false));
+      overlay.addEventListener('pointerdown', () => done(false));
+      cancel.focus();
     });
   }
 
-  // ---- 设置 ----
+  // ---- 设置（仿 ChatGPT “Keyboard shortcuts” 对话框，修改即时生效） ----
+
   let settingsOpen = false;
+
+  function makeSwitch(checked, labelledBy, onChange) {
+    const btn = el('button', 'inline-flex items-center text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:rounded-full cursor-interaction');
+    btn.type = 'button';
+    btn.setAttribute('role', 'switch');
+    btn.setAttribute('aria-labelledby', labelledBy);
+    const track = el('span', 'cgx-switch-track relative inline-flex shrink-0 items-center rounded-full transition-colors duration-basic ease-out h-5 w-8');
+    const thumb = el('span', 'cgx-switch-thumb rounded-full border shadow-sm transition-transform duration-basic ease-out data-[state=unchecked]:translate-x-0 h-4 w-4 data-[state=unchecked]:translate-x-[2px] data-[state=checked]:translate-x-[14px]');
+    track.appendChild(thumb);
+    btn.appendChild(track);
+    const set = (v) => {
+      const s = v ? 'checked' : 'unchecked';
+      btn.setAttribute('aria-checked', String(v));
+      for (const n of [btn, track, thumb]) n.setAttribute('data-state', s);
+    };
+    set(checked);
+    btn.addEventListener('click', () => {
+      const v = btn.getAttribute('aria-checked') !== 'true';
+      set(v);
+      onChange(v);
+    });
+    btn.setChecked = set;
+    return btn;
+  }
+
   function openSettings() {
     if (settingsOpen) return;
     settingsOpen = true;
-    const draft = { ...shortcuts };
-    const draftOpts = { ...options };
+    const { overlay, dialog, close } = openModal(CLS.panelDialog, '设置');
+    const uid = () => `cgx-${Math.random().toString(36).slice(2, 9)}`;
 
-    const overlay = document.createElement('div');
-    overlay.className = 'cgx-overlay';
-    const modal = document.createElement('div');
-    modal.className = 'cgx-modal';
-    modal.style.width = '520px';
-    modal.innerHTML = '<h3>删除 / 归档 / 多选 · 设置</h3>';
+    const outer = el('div', 'flex flex-col text-base leading-normal tracking-normal gap-0 overflow-hidden');
+    outer.style.maxHeight = 'min(85dvh, 704px)';
+    const header = el('div', 'flex flex-col items-start gap-3 shrink-0 px-12 pt-6 pb-2',
+      '<div class="flex min-w-0 flex-1 flex-col gap-1 self-stretch"><div class="heading-base min-w-0 font-semibold text-center text-base leading-6"><h2>删除 / 归档 / 多选</h2></div></div>');
+    const middle = el('div', 'flex min-h-0 flex-1 flex-col');
+    const scroller = el('div', 'min-h-0 flex-1 scrollbar-stable overflow-y-auto');
+    const content = el('div', 'flex flex-col gap-8 py-4');
+    const hint = el('p', 'px-6 text-sm leading-5 text-secondary select-none');
+    hint.textContent = '要修改快捷键，请点击组合键，然后按下新的按键。修改即时生效。';
+    content.appendChild(hint);
 
-    const sec1 = document.createElement('div');
-    sec1.className = 'cgx-section';
-    sec1.textContent = '快捷键（点击按钮后按下新的组合键，Esc 取消）';
-    modal.appendChild(sec1);
+    const section = (titleText) => {
+      const sec = el('section', 'flex flex-col');
+      const h3 = el('h3', 'sticky top-0 z-10 bg-surface px-6 py-0.5 text-sm leading-6 font-medium text-secondary dark:bg-surface-tertiary');
+      h3.textContent = titleText;
+      const ul = el('ul', 'flex list-none flex-col px-3');
+      sec.append(h3, ul);
+      content.appendChild(sec);
+      return ul;
+    };
+    const row = (ul, labelText, sw) => {
+      const li = el('li', 'scroll-mt-12 scroll-mb-24 border-b border-subtle last:border-b-0');
+      const line = el('div', 'flex min-h-12 items-center gap-2 py-2 ps-4 pe-3');
+      const id = uid();
+      const label = el('label', 'min-w-0 flex-1 cursor-interaction truncate text-sm leading-5 font-normal text-default select-none');
+      label.id = id;
+      label.textContent = labelText;
+      const switchEl = sw(id);
+      label.addEventListener('click', () => switchEl.click());
+      line.append(switchEl, label);
+      li.appendChild(line);
+      ul.appendChild(li);
+      return line;
+    };
 
-    const keyButtons = {};
+    // 快捷键
+    const keysUl = section('快捷键');
+    const keySlots = {};
     let recording = null;
 
-    const refreshConflicts = () => {
-      const counts = {};
-      for (const k of Object.keys(ACTIONS)) if (draft[k]) counts[draft[k]] = (counts[draft[k]] || 0) + 1;
-      for (const [k, b] of Object.entries(keyButtons)) {
-        b.textContent = recording === k ? '请按下组合键…' : prettyCombo(draft[k]);
-        b.classList.toggle('cgx-recording', recording === k);
-        b.classList.toggle('cgx-conflict', !!draft[k] && counts[draft[k]] > 1);
-        b.title = draft[k] && counts[draft[k]] > 1 ? '与其他快捷键冲突' : draft[k] || '';
-      }
-    };
-
-    for (const [key, label] of Object.entries(ACTIONS)) {
-      const row = document.createElement('div');
-      row.className = 'cgx-row';
-      const l = document.createElement('span');
-      l.className = 'cgx-label';
-      l.textContent = label;
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'cgx-key';
-      b.addEventListener('click', () => { recording = recording === key ? null : key; refreshConflicts(); });
-      const clr = document.createElement('button');
-      clr.type = 'button';
-      clr.className = 'cgx-clear';
-      clr.textContent = '×';
-      clr.title = '清除';
-      clr.addEventListener('click', () => { draft[key] = ''; recording = null; refreshConflicts(); });
-      keyButtons[key] = b;
-      row.append(l, b, clr);
-      modal.appendChild(row);
-    }
-
-    const sec2 = document.createElement('div');
-    sec2.className = 'cgx-section';
-    sec2.textContent = '行为';
-    modal.appendChild(sec2);
-    const row = document.createElement('div');
-    row.className = 'cgx-row';
-    row.innerHTML = '<span class="cgx-label">删除 / 归档当前对话后</span>';
-    const sel = document.createElement('select');
-    sel.className = 'cgx-select';
-    sel.innerHTML = '<option value="new">打开新对话</option><option value="next">打开侧边栏中的下一个对话</option>';
-    sel.value = draftOpts.afterRemove;
-    sel.addEventListener('change', () => { draftOpts.afterRemove = sel.value; });
-    row.appendChild(sel);
-    modal.appendChild(row);
-
-    const note = document.createElement('p');
-    note.className = 'cgx-note';
-    note.style.marginTop = '12px';
-    note.textContent = '提示：没有 Ctrl / Alt / ⌘ 修饰键的快捷键在输入框中不会触发。';
-    modal.appendChild(note);
-
-    const actions = document.createElement('div');
-    actions.className = 'cgx-actions';
-    const reset = document.createElement('button');
-    reset.className = 'cgx-btn';
-    reset.textContent = '恢复默认';
-    reset.style.marginRight = 'auto';
-    const cancel = document.createElement('button');
-    cancel.className = 'cgx-btn';
-    cancel.textContent = '取消';
-    const save = document.createElement('button');
-    save.className = 'cgx-btn cgx-primary';
-    save.textContent = '保存';
-    actions.append(reset, cancel, save);
-    modal.appendChild(actions);
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-    refreshConflicts();
-
-    const close = () => {
-      settingsOpen = false;
-      document.removeEventListener('keydown', onKey, true);
-      overlay.remove();
-    };
-    const onKey = (e) => {
-      if (recording) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
-          recording = null;
-        } else {
-          const combo = eventToCombo(e);
-          if (!combo) return;
-          draft[recording] = combo;
-          recording = null;
-        }
-        refreshConflicts();
+    const renderKey = (action) => {
+      const slot = keySlots[action];
+      slot.innerHTML = '';
+      if (recording === action) {
+        const wrap = el('span', 'w-40 max-w-full');
+        const input = el('input', CLS.keyInput);
+        input.readOnly = true;
+        input.placeholder = '按下组合键';
+        input.setAttribute('aria-label', '按下新的组合键');
+        input.addEventListener('blur', () => {
+          if (recording === action) { recording = null; renderKey(action); }
+        });
+        wrap.appendChild(input);
+        slot.appendChild(wrap);
+        input.focus();
         return;
       }
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
-      else e.stopPropagation(); // 设置面板打开时不触发全局快捷键
+      const b = el('button', CLS.btnKey);
+      b.type = 'button';
+      const combo = shortcuts[action];
+      b.textContent = combo ? prettyCombo(combo) : '未设置';
+      if (!combo) b.classList.add('text-tertiary');
+      b.setAttribute('aria-label', `修改“${ACTIONS[action]}”的快捷键`);
+      b.disabled = !!options.disabled[action];
+      b.addEventListener('click', () => {
+        const prev = recording;
+        recording = action;
+        if (prev && prev !== action) renderKey(prev);
+        renderKey(action);
+      });
+      slot.appendChild(b);
+    };
+
+    const switches = {};
+    for (const action of Object.keys(ACTIONS)) {
+      const line = row(keysUl, ACTIONS[action], (id) => {
+        switches[action] = makeSwitch(!options.disabled[action], id, (v) => {
+          if (v) delete options.disabled[action];
+          else options.disabled[action] = true;
+          saveOptions();
+          renderKey(action);
+          afterChange();
+        });
+        return switches[action];
+      });
+      const slot = el('span', 'inline-flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1');
+      keySlots[action] = slot;
+      line.appendChild(slot);
+      renderKey(action);
+    }
+
+    // 行为
+    const behaviorUl = section('行为');
+    const confirmSw = { el: null };
+    row(behaviorUl, '删除当前对话前确认（使用 ChatGPT 原生确认框）', (id) => {
+      confirmSw.el = makeSwitch(options.confirmDelete, id, (v) => { options.confirmDelete = v; saveOptions(); afterChange(); });
+      return confirmSw.el;
+    });
+    const nextSw = { el: null };
+    row(behaviorUl, '删除或归档当前对话后，打开侧边栏中的下一个对话', (id) => {
+      nextSw.el = makeSwitch(options.openNextAfterRemove, id, (v) => { options.openNextAfterRemove = v; saveOptions(); afterChange(); });
+      return nextSw.el;
+    });
+
+    scroller.appendChild(content);
+    middle.appendChild(scroller);
+    const footer = el('div', 'flex items-center justify-end gap-3 border-t border-primary-outline bg-surface px-3 py-3 dark:bg-surface-tertiary');
+    const restore = el('button', CLS.btnRestore);
+    restore.type = 'button';
+    restore.textContent = '恢复默认';
+    footer.appendChild(restore);
+    middle.appendChild(footer);
+    outer.append(header, middle);
+    const x = el('button', CLS.btnClosePanel, `${icon('xmark-md-light-20', 20)}<span class="sr-only">关闭</span>`);
+    x.type = 'button';
+    dialog.append(outer, x);
+
+    const isDefault = () =>
+      JSON.stringify(shortcuts) === JSON.stringify(DEFAULT_SHORTCUTS) &&
+      options.confirmDelete === DEFAULT_OPTIONS.confirmDelete &&
+      options.openNextAfterRemove === DEFAULT_OPTIONS.openNextAfterRemove &&
+      Object.keys(options.disabled).length === 0;
+    function afterChange() {
+      restore.disabled = isDefault();
+      updateToggleButton();
+      if (bar) renderBar();
+    }
+    afterChange();
+
+    restore.addEventListener('click', () => {
+      shortcuts = { ...DEFAULT_SHORTCUTS };
+      options.confirmDelete = DEFAULT_OPTIONS.confirmDelete;
+      options.openNextAfterRemove = DEFAULT_OPTIONS.openNextAfterRemove;
+      options.disabled = {};
+      saveShortcuts();
+      saveOptions();
+      recording = null;
+      for (const action of Object.keys(ACTIONS)) {
+        switches[action].setChecked(true);
+        renderKey(action);
+      }
+      confirmSw.el.setChecked(options.confirmDelete);
+      nextSw.el.setChecked(options.openNextAfterRemove);
+      afterChange();
+    });
+
+    const finish = () => {
+      settingsOpen = false;
+      document.removeEventListener('keydown', onKey, true);
+      close();
+    };
+    const onKey = (e) => {
+      e.stopPropagation(); // 设置打开时不触发任何页面快捷键
+      if (recording) {
+        e.preventDefault();
+        if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+          const a = recording;
+          recording = null;
+          renderKey(a);
+          return;
+        }
+        const combo = eventToCombo(e);
+        if (!combo) return;
+        const input = keySlots[recording].querySelector('input');
+        const clash = Object.keys(ACTIONS).find((k) => k !== recording && shortcuts[k] === combo);
+        if (clash) {
+          input.setAttribute('aria-invalid', 'true');
+          input.value = '';
+          input.placeholder = `已被“${ACTIONS[clash]}”使用`;
+          return;
+        }
+        const a = recording;
+        shortcuts[a] = combo;
+        saveShortcuts();
+        recording = null;
+        renderKey(a);
+        afterChange();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        finish();
+      }
     };
     document.addEventListener('keydown', onKey, true);
-    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
-    cancel.addEventListener('click', close);
-    reset.addEventListener('click', () => {
-      Object.assign(draft, DEFAULT_SHORTCUTS);
-      Object.assign(draftOpts, DEFAULT_OPTIONS);
-      sel.value = draftOpts.afterRemove;
-      recording = null;
-      refreshConflicts();
-    });
-    save.addEventListener('click', () => {
-      shortcuts = { ...draft };
-      options = { ...draftOpts };
-      store.set('shortcuts', shortcuts);
-      store.set('options', options);
-      updateToggleButton();
-      renderBar();
-      close();
-      toast('设置已保存', 'ok');
-    });
+    overlay.addEventListener('pointerdown', finish);
+    x.addEventListener('click', finish);
+    dialog.focus();
   }
 
   // ---------------------------------------------------------------------------
@@ -890,19 +1112,21 @@
   // ---------------------------------------------------------------------------
 
   const HANDLERS = {
-    deleteCurrent: () => removeCurrent('delete'),
-    archiveCurrent: () => removeCurrent('archive'),
+    deleteCurrent,
+    archiveCurrent,
     toggleMultiSelect: () => setMultiMode(!multiMode),
-    toggleSelectCurrent: toggleSelectCurrent,
-    deleteSelected: () => { if (multiMode) runBatch('delete'); else toast('请先开启多选模式', 'warn'); },
-    openSettings: openSettings,
+    toggleSelectCurrent,
+    deleteSelected: () => { if (multiMode) runBatch('delete'); },
+    openSettings,
   };
 
   function onKeyDown(e) {
-    if (e.isComposing || e.repeat || settingsOpen || document.querySelector('.cgx-overlay')) return;
+    if (e.isComposing || e.repeat || settingsOpen) return;
+    if (document.querySelector('.cgx-dialog') || isNativeDialogOpen()) return;
     const combo = eventToCombo(e);
     if (!combo) return;
-    for (const [action, sc] of Object.entries(shortcuts)) {
+    for (const action of Object.keys(HANDLERS)) {
+      const sc = activeCombo(action);
       if (!sc || sc !== combo) continue;
       if (!comboHasModifier(sc) && isEditableTarget(e.target)) return;
       e.preventDefault();
@@ -919,31 +1143,36 @@
 
   function init() {
     injectStyle();
+    syncAccent();
     window.addEventListener('keydown', onKeyDown, true);
-    window.addEventListener('resize', positionBar);
+    window.addEventListener('resize', () => { if (bar) placeBar(); });
 
     try {
-      GM_registerMenuCommand('⚙️ 快捷键设置', openSettings);
-      GM_registerMenuCommand('☑️ 开启 / 退出多选模式', () => setMultiMode(!multiMode));
+      GM_registerMenuCommand('设置', openSettings);
+      GM_registerMenuCommand('开启 / 退出多选', () => setMultiMode(!multiMode));
     } catch (_) { /* ignore */ }
 
     let scheduled = false;
     let lastPath = location.pathname;
     const tick = () => {
       scheduled = false;
+      syncAccent();
       ensureToggleButton();
       if (multiMode || removedIds.size) decorateSidebar();
-      if (multiMode) positionBar();
       if (location.pathname !== lastPath) {
         lastPath = location.pathname;
         if (multiMode) renderBar();
       }
     };
-    new MutationObserver(() => {
+    const schedule = () => {
       if (scheduled) return;
       scheduled = true;
       requestAnimationFrame(tick);
-    }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-current', 'href'] });
+    };
+    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-current', 'href'] });
+    // 强调色 / 主题切换会改动 <head> 中的样式和 <html> 属性
+    new MutationObserver(schedule).observe(document.head, { childList: true, subtree: true, characterData: true });
+    new MutationObserver(schedule).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
     tick();
   }
 
