@@ -1,9 +1,12 @@
 // ==UserScript==
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
+// @name:en      ChatGPT Quick Delete / Archive / Bulk Delete
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
 // @version      2.2.0
 // @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
+// @description:en Delete or archive the current chat with a shortcut, multi-select chats in the sidebar to delete or archive in bulk, customizable shortcuts. Uses ChatGPT's native UI style.
 // @author       jujuanel
+// @license      MIT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @icon         https://chatgpt.com/favicon.ico
