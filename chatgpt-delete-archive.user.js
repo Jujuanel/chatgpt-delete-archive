@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
-// @version      2.1.2
+// @version      2.2.0
 // @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
 // @author       jujuanel
 // @match        https://chatgpt.com/*
@@ -43,7 +43,7 @@
 
   const DEFAULT_OPTIONS = {
     confirmDelete: true, // 删除当前对话前使用 ChatGPT 原生确认框
-    openNextAfterRemove: false, // 删除 / 归档当前对话后打开侧边栏中的下一个对话
+    openAfterRemove: 'new', // 删除 / 归档当前对话后打开：'new' 新对话 / 'prev' 侧边栏中的上一个对话 / 'next' 下一个对话
     disabled: {}, // 被关闭的快捷键 { action: true }
     barPos: null, // 多选工具栏位置 { left, top }
   };
@@ -65,6 +65,10 @@
   let shortcuts = { ...DEFAULT_SHORTCUTS, ...store.get('shortcuts', {}) };
   let options = { ...DEFAULT_OPTIONS, ...store.get('options', {}) };
   delete options.afterRemove; // v1 遗留字段
+  if ('openNextAfterRemove' in options) { // v2.1 的开关
+    if (options.openNextAfterRemove) options.openAfterRemove = 'next';
+    delete options.openNextAfterRemove;
+  }
 
   const saveShortcuts = () => store.set('shortcuts', shortcuts);
   const saveOptions = () => store.set('options', options);
@@ -387,20 +391,26 @@
     location.assign(path);
   }
 
-  // 侧边栏中 id 之后（没有则之前）的对话
-  function neighborOf(id, exclude) {
+  // 侧边栏中 id 的相邻对话：dir 为 'next' 时取之后（没有则之前），为 'prev' 时取之前（没有则之后）
+  function neighborOf(id, exclude, dir) {
     const all = getSidebarLinks().map((a) => idFromHref(a.getAttribute('href')));
     const order = getVisibleIdsInOrder().filter((x) => !exclude.includes(x));
     const idx = all.indexOf(id);
     if (idx < 0) return null;
-    return all.slice(idx + 1).find((x) => order.includes(x)) ||
-      all.slice(0, idx).reverse().find((x) => order.includes(x)) || null;
+    const after = all.slice(idx + 1).find((x) => order.includes(x));
+    const before = all.slice(0, idx).reverse().find((x) => order.includes(x));
+    return (dir === 'prev' ? before || after : after || before) || null;
   }
 
-  function leaveConversation(removedList, nextId) {
+  // 删除 / 归档后要打开的对话；null 表示新对话
+  function afterRemoveTarget(id, exclude) {
+    return options.openAfterRemove === 'new' ? null : neighborOf(id, exclude, options.openAfterRemove);
+  }
+
+  function leaveConversation(removedList) {
     const current = getCurrentId();
     if (!current || !removedList.includes(current)) return;
-    const target = options.openNextAfterRemove ? (nextId || neighborOf(current, removedList)) : null;
+    const target = afterRemoveTarget(current, removedList);
     const link = target && linkOf(target);
     navigateTo(link ? link.getAttribute('href') : '/');
   }
@@ -457,10 +467,10 @@
       return;
     }
     if (options.confirmDelete) {
-      const nextId = neighborOf(id, [id]);
+      const nextId = afterRemoveTarget(id, [id]);
       if (await openNativeDeleteDialog(id)) {
-        if (!options.openNextAfterRemove) return;
-        // 用户在原生确认框中确认删除后，ChatGPT 会离开该对话；此时再跳到下一个对话
+        if (options.openAfterRemove === 'new') return;
+        // 用户在原生确认框中确认删除后，ChatGPT 会离开该对话；此时再跳到相邻对话
         await waitFor(() => !isNativeDialogOpen(), 10 * 60 * 1000, 150);
         const left = await waitFor(() => getCurrentId() !== id, 3000);
         const link = left && nextId && linkOf(nextId);
@@ -935,6 +945,40 @@
     return btn;
   }
 
+  const AFTER_REMOVE_CHOICES = { new: '新对话', prev: '上一个对话', next: '下一个对话' };
+
+  // 单选按钮组，外观与快捷键按钮一致，选中项高亮
+  function makeSegmented(choices, value, onChange) {
+    const group = el('span', 'inline-flex shrink-0 items-center gap-1');
+    group.setAttribute('role', 'radiogroup');
+    const btns = {};
+    const set = (v) => {
+      for (const [k, b] of Object.entries(btns)) {
+        const on = k === v;
+        b.setAttribute('aria-checked', String(on));
+        b.classList.toggle('bg-primary-ghost-hover', on);
+        b.classList.toggle('text-default', on);
+        b.classList.toggle('text-secondary', !on);
+      }
+    };
+    for (const [k, text] of Object.entries(choices)) {
+      const b = el('button', CLS.btnKey);
+      b.type = 'button';
+      b.setAttribute('role', 'radio');
+      b.textContent = text;
+      b.addEventListener('click', () => {
+        if (b.getAttribute('aria-checked') === 'true') return;
+        set(k);
+        onChange(k);
+      });
+      btns[k] = b;
+      group.appendChild(b);
+    }
+    set(value);
+    group.setValue = set;
+    return group;
+  }
+
   function openSettings() {
     if (settingsOpen) return;
     settingsOpen = true;
@@ -1039,11 +1083,22 @@
       confirmSw.el = makeSwitch(options.confirmDelete, id, (v) => { options.confirmDelete = v; saveOptions(); afterChange(); });
       return confirmSw.el;
     });
-    const nextSw = { el: null };
-    row(behaviorUl, '删除或归档当前对话后，打开侧边栏中的下一个对话', (id) => {
-      nextSw.el = makeSwitch(options.openNextAfterRemove, id, (v) => { options.openNextAfterRemove = v; saveOptions(); afterChange(); });
-      return nextSw.el;
+    const afterRemoveSeg = makeSegmented(AFTER_REMOVE_CHOICES, options.openAfterRemove, (v) => {
+      options.openAfterRemove = v;
+      saveOptions();
+      afterChange();
     });
+    {
+      const li = el('li', 'scroll-mt-12 scroll-mb-24 border-b border-subtle last:border-b-0');
+      const line = el('div', 'flex min-h-12 items-center gap-2 py-2 ps-4 pe-3');
+      const label = el('span', 'min-w-0 flex-1 truncate text-sm leading-5 font-normal text-default select-none');
+      label.id = uid();
+      label.textContent = '删除或归档当前对话后打开';
+      afterRemoveSeg.setAttribute('aria-labelledby', label.id);
+      line.append(label, afterRemoveSeg);
+      li.appendChild(line);
+      behaviorUl.appendChild(li);
+    }
 
     scroller.appendChild(content);
     middle.appendChild(scroller);
@@ -1061,7 +1116,7 @@
     const isDefault = () =>
       JSON.stringify(shortcuts) === JSON.stringify(DEFAULT_SHORTCUTS) &&
       options.confirmDelete === DEFAULT_OPTIONS.confirmDelete &&
-      options.openNextAfterRemove === DEFAULT_OPTIONS.openNextAfterRemove &&
+      options.openAfterRemove === DEFAULT_OPTIONS.openAfterRemove &&
       Object.keys(options.disabled).length === 0;
     function afterChange() {
       restore.disabled = isDefault();
@@ -1073,7 +1128,7 @@
     restore.addEventListener('click', () => {
       shortcuts = { ...DEFAULT_SHORTCUTS };
       options.confirmDelete = DEFAULT_OPTIONS.confirmDelete;
-      options.openNextAfterRemove = DEFAULT_OPTIONS.openNextAfterRemove;
+      options.openAfterRemove = DEFAULT_OPTIONS.openAfterRemove;
       options.disabled = {};
       saveShortcuts();
       saveOptions();
@@ -1083,7 +1138,7 @@
         renderKey(action);
       }
       confirmSw.el.setChecked(options.confirmDelete);
-      nextSw.el.setChecked(options.openNextAfterRemove);
+      afterRemoveSeg.setValue(options.openAfterRemove);
       afterChange();
     });
 
