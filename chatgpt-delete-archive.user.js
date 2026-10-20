@@ -2,7 +2,7 @@
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
 // @name:en      ChatGPT Quick Delete / Archive / Bulk Delete
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
-// @version      2.2.0
+// @version      2.2.1
 // @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
 // @description:en Delete or archive the current chat with a shortcut, multi-select chats in the sidebar to delete or archive in bulk, customizable shortcuts. Uses ChatGPT's native UI style.
 // @author       jujuanel
@@ -352,11 +352,9 @@
     }
   }
 
-  // 对话列表（Recents）的分组标题行，不依赖界面语言。
-  // Projects 分组里的对话链接是 /g/<project>/c/<id>，Recents 里普通对话是 /c/<id>
+  // 对话列表（Recents）的分组标题行；分组容器的 heading 属性固定为英文，不随界面语言变化
   function getRecentsHeader() {
-    return [...document.querySelectorAll('nav [class~="group/nav-section-title"]')]
-      .find((h) => h.parentElement && h.parentElement.querySelector('a[href^="/c/"]')) || null;
+    return document.querySelector('nav [data-app-action-sidebar-section-heading="Recents"] [class~="group/nav-section-title"]');
   }
 
   // ChatGPT 的 React Router 实例，用它跳转与点击侧边栏链接效果相同
