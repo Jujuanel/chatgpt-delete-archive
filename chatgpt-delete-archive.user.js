@@ -2,7 +2,7 @@
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
 // @name:en      ChatGPT Quick Delete / Archive / Bulk Delete
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
-// @version      2.2.1
+// @version      2.2.2
 // @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
 // @description:en Delete or archive the current chat with a shortcut, multi-select chats in the sidebar to delete or archive in bulk, customizable shortcuts. Uses ChatGPT's native UI style.
 // @author       jujuanel
@@ -111,6 +111,9 @@
     'xmark-md-light-20': '<path d="M5.5 5.5l9 9M14.5 5.5l-9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
   };
 
+  // sprite 内的图标 id 统一带此前缀，如 codex-icon-trash-light-16
+  const SPRITE_ID_PREFIX = 'codex-icon-';
+
   function spriteUrl() {
     const use = document.querySelector('use[href*="/cdn/assets/icons-"]');
     return use ? use.getAttribute('href').split('#')[0] : null;
@@ -120,7 +123,7 @@
     const sprite = spriteUrl();
     const vb = /-20$/.test(name) ? 20 : 16;
     const inner = sprite
-      ? `<use href="${sprite}#${name}" fill="currentColor"></use>`
+      ? `<use href="${sprite}#${SPRITE_ID_PREFIX}${name}" fill="currentColor"></use>`
       : (FALLBACK_ICONS[name] || '');
     return `<svg aria-hidden="true" focusable="false" class="shrink-0 ${extraClass}" width="${size}" height="${size}" viewBox="0 0 ${vb} ${vb}" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
   }
