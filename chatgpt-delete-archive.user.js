@@ -2,7 +2,7 @@
 // @name         ChatGPT 快捷删除 / 归档 / 多选批量删除
 // @name:en      ChatGPT Quick Delete / Archive / Bulk Delete
 // @namespace    https://github.com/jujuanel/chatgpt-delete-archive
-// @version      2.2.2
+// @version      2.2.3
 // @description  快捷键删除或归档当前对话；侧边栏多选模式（可正常切换对话），批量删除/归档；快捷键可自定义。界面复用 ChatGPT 原生样式与强调色。
 // @description:en Delete or archive the current chat with a shortcut, multi-select chats in the sidebar to delete or archive in bulk, customizable shortcuts. Uses ChatGPT's native UI style.
 // @author       jujuanel
@@ -137,10 +137,10 @@
 
   // 只补充 ChatGPT 没有对应组件的少量样式；颜色全部取自 ChatGPT 的 CSS 变量
   const CSS = `
-  /* 强调色跟随 ChatGPT 设置：原生开关等强调色控件使用 --color-chart-blue */
+  /* 强调色跟随 ChatGPT 主题：原生选中指示器、滑块等强调色控件使用 --color-accent */
   :root {
-    --cgx-accent: var(--color-chart-blue);
-    --cgx-sel-bg: var(--app-color-background-accent, color-mix(in oklab, var(--color-chart-blue) 14%, transparent));
+    --cgx-accent: var(--color-accent);
+    --cgx-sel-bg: var(--app-color-background-accent);
   }
   .cgx-removed { display: none !important; }
 
